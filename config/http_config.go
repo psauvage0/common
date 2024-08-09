@@ -311,6 +311,8 @@ type HTTPClientConfig struct {
 	EnableHTTP2 bool `yaml:"enable_http2" json:"enable_http2"`
 	// Proxy configuration.
 	ProxyConfig `yaml:",inline"`
+	// Custom RoundTripper
+	RoundTripper http.RoundTripper `yaml:"-"`
 }
 
 // SetDirectory joins any relative file paths with dir.
@@ -422,16 +424,23 @@ func (a *BasicAuth) UnmarshalYAML(unmarshal func(interface{}) error) error {
 type DialContextFunc func(context.Context, string, string) (net.Conn, error)
 
 type httpClientOptions struct {
-	dialContextFunc   DialContextFunc
-	keepAlivesEnabled bool
-	http2Enabled      bool
-	idleConnTimeout   time.Duration
-	userAgent         string
-	host              string
+	customRoundTripper http.RoundTripper
+	dialContextFunc    DialContextFunc
+	keepAlivesEnabled  bool
+	http2Enabled       bool
+	idleConnTimeout    time.Duration
+	userAgent          string
+	host               string
 }
 
 // HTTPClientOption defines an option that can be applied to the HTTP client.
 type HTTPClientOption func(options *httpClientOptions)
+
+func WithRoundTripper(fn http.RoundTripper) HTTPClientOption {
+	return func(opts *httpClientOptions) {
+		opts.customRoundTripper = fn
+	}
+}
 
 // WithDialContextFunc allows you to override func gets used for the actual dialing. The default is `net.Dialer.DialContext`.
 func WithDialContextFunc(fn DialContextFunc) HTTPClientOption {
@@ -522,7 +531,7 @@ func NewRoundTripperFromConfig(cfg HTTPClientConfig, name string, optFuncs ...HT
 	newRT := func(tlsConfig *tls.Config) (http.RoundTripper, error) {
 		// The only timeout we care about is the configured scrape timeout.
 		// It is applied on request. So we leave out any timings here.
-		var rt http.RoundTripper = &http.Transport{
+		baseRT := &http.Transport{
 			Proxy:                 cfg.ProxyConfig.Proxy(),
 			ProxyConnectHeader:    cfg.ProxyConfig.GetProxyConnectHeader(),
 			MaxIdleConns:          20000,
@@ -534,6 +543,12 @@ func NewRoundTripperFromConfig(cfg HTTPClientConfig, name string, optFuncs ...HT
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 			DialContext:           dialContext,
+		}
+		var rt http.RoundTripper
+		if opts.customRoundTripper != nil {
+			rt = opts.customRoundTripper
+		} else {
+			rt = baseRT
 		}
 		if opts.http2Enabled && cfg.EnableHTTP2 {
 			// HTTP/2 support is golang had many problematic cornercases where
